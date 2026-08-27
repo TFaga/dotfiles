@@ -15,6 +15,26 @@ alias config="/usr/bin/git --git-dir=$HOME/.local/share/dotfiles/ --work-tree=$H
 
 ## Install on a new machine
 
+### One-liner
+
+The fastest way to bootstrap is the `dotfiles-install` script, which performs
+all of the manual steps below (clone over HTTPS, check out, hide untracked
+files, and switch the remote to SSH). Pass `--setup` to also run
+`dotfiles-setup` afterwards (Homebrew, Brewfile, fish as the login shell,
+mise, and ffmpeg/ffprobe):
+
+```sh
+# Clone + check out only:
+curl -fsSL https://raw.githubusercontent.com/TFaga/dotfiles/main/.local/bin/dotfiles-install | bash
+
+# Clone, check out, and run the full setup/bootstrap:
+curl -fsSL https://raw.githubusercontent.com/TFaga/dotfiles/main/.local/bin/dotfiles-install | bash -s -- --setup
+```
+
+Both scripts are idempotent and safe to re-run.
+
+### Manual steps
+
 ```sh
 # 1. Clone the bare repo
 git clone --bare git@github.com:TFaga/dotfiles.git $HOME/.local/share/dotfiles

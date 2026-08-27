@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# dotfiles-install
+# Clones the bare dotfiles repo and checks it out into $HOME.
+# Pass --setup to chain into dotfiles-setup afterwards.
+# Idempotent: safe to re-run.
+# ============================================================
+
+# === Logging ===============================================
+# Script messages are prefixed (and colorized when on a TTY) so
+# they stay visually distinct from the raw output of the tools
+# this script drives (git, ssh-keygen, chsh, ...).
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  C_CYAN='\033[1;36m'; C_RED='\033[1;31m'; C_RESET='\033[0m'
+else
+  C_CYAN=''; C_RED=''; C_RESET=''
+fi
+log() { printf "${C_CYAN}dotfiles ›${C_RESET} %s\n" "$*"; }
+err() { printf "${C_RED}dotfiles ✗${C_RESET} %s\n" "$*" >&2; }
+
+# === Configuration =========================================
+DOTFILES_DIR="$HOME/.local/share/dotfiles"
+WORK_TREE="$HOME"
+REPO_URL_HTTPS="https://github.com/TFaga/dotfiles.git"
+REPO_URL_SSH="git@github.com:TFaga/dotfiles.git"
+
+DOTFILES_GIT=(git --git-dir="$DOTFILES_DIR" --work-tree="$WORK_TREE")
+
+# === Temp cleanup ==========================================
+# All temporary artifacts live under TMPDIR and are removed on exit.
+TMPDIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMPDIR"; }
+trap cleanup EXIT
+
+# === Platform guard ========================================
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  err "this script only supports macOS."
+  exit 1
+fi
+
+# === Prereqs ===============================================
+if ! command -v git >/dev/null 2>&1; then
+  if ! command -v xcode-select >/dev/null 2>&1; then
+    err "git is required and Xcode command line tools are unavailable."
+    exit 1
+  fi
+  log "git not found; installing Xcode command line tools ..."
+  xcode-select --install
+  log "Please complete the Xcode command line tools install, then re-run this script."
+  exit 0
+fi
+
+# === Clone or update the bare repo ========================
+if [[ ! -d "$DOTFILES_DIR" ]]; then
+  log "Cloning dotfiles (https) into $DOTFILES_DIR ..."
+  git clone --bare "$REPO_URL_HTTPS" "$DOTFILES_DIR"
+else
+  log "Dotfiles repo already present; fetching latest ..."
+  git -C "$DOTFILES_DIR" fetch --prune
+fi
+
+# === Repo config ===========================================
+"${DOTFILES_GIT[@]}" config status.showUntrackedFiles no
+
+# === Checkout with conflict handling ======================
+log "Checking out dotfiles into $WORK_TREE ..."
+checkout_out="$("${DOTFILES_GIT[@]}" checkout 2>&1)" || true
+echo "$checkout_out"
+
+if echo "$checkout_out" | grep -q "would be overwritten by checkout"; then
+  BACKUP_DIR="$HOME/.local/share/dotfiles-backup-$(date +%s)"
+  mkdir -p "$BACKUP_DIR"
+  mapfile -t CONFLICTS < <(echo "$checkout_out" \
+    | sed -n '/would be overwritten by checkout:/,/^$/p' \
+    | sed '1d' | grep -v '^[[:space:]]*$')
+  for raw in "${CONFLICTS[@]:-}"; do
+    [[ -z "$raw" ]] && continue
+    f="${raw#"${raw%%[![:space:]]*}"}"
+    target="$WORK_TREE/$f"
+    log "Backing up $target -> $BACKUP_DIR/$f"
+    mkdir -p "$BACKUP_DIR/$(dirname "$f")"
+    mv "$target" "$BACKUP_DIR/$f"
+  done
+  "${DOTFILES_GIT[@]}" checkout
+  log "Conflicts were backed up to $BACKUP_DIR"
+fi
+
+# === SSH directory permissions ============================
+if [[ -d "$HOME/.ssh" ]]; then
+  chmod 700 "$HOME/.ssh"
+  [[ -f "$HOME/.ssh/config" ]] && chmod 600 "$HOME/.ssh/config"
+fi
+
+# === Switch remote origin to SSH ==========================
+current_url="$("${DOTFILES_GIT[@]}" remote get-url origin)"
+if [[ "$current_url" == https://* ]]; then
+  log "Switching remote origin to SSH ($REPO_URL_SSH) ..."
+  "${DOTFILES_GIT[@]}" remote set-url origin "$REPO_URL_SSH"
+fi
+
+log "Dotfiles checkout complete."
+
+# === Optionally chain into setup ==========================
+chain_setup=0
+for arg in "$@"; do
+  [[ "$arg" == "--setup" ]] && chain_setup=1
+done
+
+if [[ "$chain_setup" -eq 1 ]]; then
+  setup_script="$HOME/.local/bin/dotfiles-setup"
+  if [[ -x "$setup_script" ]]; then
+    log "Chaining into setup ($setup_script) ..."
+    "$setup_script"
+  else
+    err "Setup script not found at $setup_script; skipping chain."
+  fi
+fi

@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# dotfiles-setup
+# Reconciles a machine: SSH key, Homebrew, Brewfile, fish as the
+# login shell, mise toolchains, and ffmpeg/ffprobe (Apple Silicon).
+# Idempotent: safe to re-run.
+# ============================================================
+
+# === Logging ===============================================
+# Script messages are prefixed (and colorized when on a TTY) so
+# they stay visually distinct from the raw output of the tools
+# this script drives (brew, ssh-keygen, chsh, mise, ...).
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  C_CYAN='\033[1;36m'; C_RED='\033[1;31m'; C_RESET='\033[0m'
+else
+  C_CYAN=''; C_RED=''; C_RESET=''
+fi
+log() { printf "${C_CYAN}dotfiles ›${C_RESET} %s\n" "$*"; }
+err() { printf "${C_RED}dotfiles ✗${C_RESET} %s\n" "$*" >&2; }
+
+# === Platform guard ========================================
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  err "this script only supports macOS."
+  exit 1
+fi
+
+# === Configuration =========================================
+WORK_TREE="$HOME"
+DOTFILES_DIR="$HOME/.local/share/dotfiles"
+DOTFILES_GIT=(git --git-dir="$DOTFILES_DIR" --work-tree="$WORK_TREE")
+
+BIN_DIR="$HOME/.local/bin"
+ARCH="$(uname -m)"
+
+# === Temp cleanup ==========================================
+# All downloaded archives and extracts live under TMPDIR and are
+# removed on exit.
+TMPDIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMPDIR"; }
+trap cleanup EXIT
+
+# === Ensure target directories =============================
+mkdir -p "$BIN_DIR"
+
+# === SSH key (ed25519) =====================================
+SSH_KEY="$HOME/.ssh/id_ed25519"
+if [[ ! -f "$SSH_KEY" ]]; then
+  mkdir -p "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  comment="$(whoami)@$(hostname -s)"
+  log "Generating ed25519 SSH key ($comment) ..."
+  ssh-keygen -t ed25519 -C "$comment" -f "$SSH_KEY" -N ""
+  chmod 600 "$SSH_KEY"
+  chmod 644 "$SSH_KEY.pub"
+  log "Add this public key to GitHub (https://github.com/settings/ssh/new):"
+  cat "$SSH_KEY.pub"
+else
+  log "SSH key $SSH_KEY already exists; skipping."
+fi
+
+# === Homebrew (install if missing) =========================
+if ! command -v brew >/dev/null 2>&1; then
+  log "Installing Homebrew ..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+else
+  log "Homebrew already installed; skipping."
+fi
+
+# Bring brew onto PATH for the remainder of this session.
+if ! command -v brew >/dev/null 2>&1; then
+  [[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+
+# === Brewfile ==============================================
+if [[ -f "$HOME/.config/homebrew/Brewfile" ]]; then
+  log "Running brew bundle ..."
+  brew bundle --file "$HOME/.config/homebrew/Brewfile"
+else
+  log "No Brewfile found; skipping brew bundle."
+fi
+
+# === Default shell (fish via /etc/shells + chsh) ===========
+FISH_BIN="$(command -v fish || true)"
+[[ -z "$FISH_BIN" && -x /opt/homebrew/bin/fish ]] && FISH_BIN=/opt/homebrew/bin/fish
+
+if [[ -n "$FISH_BIN" ]]; then
+  if ! grep -qx "$FISH_BIN" /etc/shells; then
+    log "Adding $FISH_BIN to /etc/shells (requires admin password) ..."
+    echo "$FISH_BIN" | sudo tee -a /etc/shells >/dev/null
+  else
+    log "$FISH_BIN already present in /etc/shells."
+  fi
+  current_shell="$(dscl . read /Users/"$(whoami)" UserShell 2>/dev/null | awk '{print $2}')"
+  if [[ "$current_shell" != "$FISH_BIN" ]]; then
+    log "Setting $FISH_BIN as login shell (requires password) ..."
+    chsh -s "$FISH_BIN"
+  else
+    log "Login shell already $FISH_BIN; skipping chsh."
+  fi
+else
+  log "fish not found; skipping default-shell setup."
+fi
+
+# === mise toolchains =======================================
+if command -v mise >/dev/null 2>&1; then
+  log "Running mise install ..."
+  mise install
+else
+  log "mise not found; skipping."
+fi
+
+# === ffmpeg / ffprobe (osxexperts.net, Apple Silicon) ======
+# Installs a single tool from a zip archive, verifying its sha256
+# and (on Apple Silicon) stripping quarantine + ad-hoc signing.
+install_ffmpeg_tool() {
+  local name="$1" url="$2" expected_sha="$3" dest="$BIN_DIR/$name"
+  if [[ -x "$dest" ]] && codesign -v "$dest" >/dev/null 2>&1; then
+    log "$name already present and signed; skipping."
+    return 0
+  fi
+  log "Downloading $name ..."
+  local archive="$TMPDIR/$name.zip"
+  curl -fsSL "$url" -o "$archive"
+  local extract_dir="$TMPDIR/$name"
+  mkdir -p "$extract_dir"
+  unzip -o "$archive" -d "$extract_dir" >/dev/null
+  local bin
+  bin="$(find "$extract_dir" -type f -name "$name" | head -n1)"
+  local actual_sha
+  actual_sha="$(shasum -a 256 "$bin" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    err "$name sha256 mismatch (got $actual_sha, expected $expected_sha). Update the expected checksum or inspect the download."
+    return 1
+  fi
+  mv "$bin" "$dest"
+  chmod +x "$dest"
+  xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
+  xattr -cr "$dest" 2>/dev/null || true
+  codesign -s - "$dest" 2>/dev/null || true
+  log "$name installed to $dest"
+}
+
+if [[ "$ARCH" != "arm64" ]]; then
+  log "Skipping ffmpeg/ffprobe: only Apple Silicon (arm64) is supported."
+else
+  BINARIES=(
+    "ffmpeg|https://www.osxexperts.net/ffmpeg9arm.zip|591260c945d0eef150e3bf82b0ef988bd36a9cecc18ff05d6679617159f0a95e"
+    "ffprobe|https://www.osxexperts.net/ffprobe9arm.zip|e11c17e8200b3ee4c4c186d245e2b4053f01d56957336c1817fca0b997469106"
+  )
+  for entry in "${BINARIES[@]}"; do
+    IFS='|' read -r name url sha <<< "$entry"
+    install_ffmpeg_tool "$name" "$url" "$sha"
+  done
+fi
+
+log "Dotfiles setup complete. Start a new login shell (or run: exec fish) to apply changes."
