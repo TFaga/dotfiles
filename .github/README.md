@@ -26,7 +26,9 @@ mise, and ffmpeg/ffprobe):
 ```sh
 # Clone + check out only:
 curl -fsSL https://raw.githubusercontent.com/TFaga/dotfiles/main/.local/bin/dotfiles-install | bash
+```
 
+```sh
 # Clone, check out, and run the full setup/bootstrap:
 curl -fsSL https://raw.githubusercontent.com/TFaga/dotfiles/main/.local/bin/dotfiles-install | bash -s -- --setup
 ```
