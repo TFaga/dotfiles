@@ -4,6 +4,8 @@ brew "fish"
 brew "mise"
 # Mac App Store command-line interface
 brew "mas"
+# GitHub command-line tool
+brew "gh"
 # Search tool like grep and The Silver Searcher
 brew "ripgrep"
 # Non-interactive SSH password auth
