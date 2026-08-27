@@ -1,0 +1,8 @@
+" Sets the default vim settings. 
+source $VIMRUNTIME/defaults.vim
+
+set viminfo+=n~/.local/share/vim/viminfo
+
+" Enable syntax highlighting.
+syntax on
+
