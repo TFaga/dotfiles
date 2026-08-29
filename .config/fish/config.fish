@@ -21,7 +21,7 @@ set --global --export XDG_STATE_HOME $HOME/.local/state
 alias config "/usr/bin/git --git-dir=$HOME/.local/share/dotfiles/ --work-tree=$HOME"
 
 # Local Cellar
-fish_add_path "$HOME/.local/bin"
+fish_add_path $HOME/.local/bin
 
 # Libvirt
 set --global --export LIBVIRT_HOST labnode-01
